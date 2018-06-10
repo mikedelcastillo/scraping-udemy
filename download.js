@@ -1,44 +1,25 @@
-require('dotenv').config();
-const axios = require('axios');
-const urls = require('./urls');
 const fs = require('fs');
 const {sync: mkdir} = require('mkdirp');
 const path = require('path');
-const {join} = path;
+const request = require('request');
 const term = require('./term');
 const ln = fs.symlinkSync;
-const icon = (p, i) => term(`./node_modules/fileicon/bin/fileicon set '${p}' '${i}'`);
-const safe = p => p.toLowerCase().replace(/[\s\-\\\ \'\"\/]{1,}/gmi, '-');
+const icon = (p, i) => term(`./node_modules/xfileicon/bin/fileicon set '${p}' '${i}'`);
+const safe = p => p.toLowerCase().replace(/[\-\\\ \'\"\/\:\;\<\>\+\&]{1,}/gmi, '-');
 
-axios.defaults.headers.common['x-udemy-authorization'] = process.env.auth;
+const {ROOT, TEMP, COURSES, DATA} = require('./paths');
 
-const ROOT = './udemy';
-const TEMP = path.join(ROOT, 'downloading');
-const COURSES = path.join(ROOT, 'courses');
-const ASSETS = path.join(ROOT, 'assets');
-const DATA = path.join(ROOT, 'data');
+const courses = JSON.parse(fs.readFileSync(path.join(DATA, 'courses.json'), 'utf-8'));
 
-let immediate = true;
-
-let downloads = [];
-let data = {};
-
-async function download(id, p, url){
-  console.log('\n');
+const download = async (p, url) => {
+  mkdir(TEMP);
   const parse = path.parse(p);
-  const idFile = `${id}${parse.ext}`;
-  const assetFile = path.join(ASSETS, idFile);
-  const relative = path.join("../../../../assets", idFile);
-  term(`ln -sf '${relative}' '${p}'`);
-  if(fs.existsSync(p)) fs.unlinkSync(p);
-
-  const run = () => new Promise((resolve, reject) => {
-    if(fs.existsSync(assetFile)) return resolve();
-    mkdir(TEMP);
-    mkdir(ASSETS);
-    const tempFile = path.join(TEMP, idFile);
+  const id = (Math.floor(Math.random() * 999999999) + 100000000).toString();
+  const tempFile = path.join(TEMP, `${id}-${parse.base}`);
+  return new Promise((resolve, reject) => {
+    if(fs.existsSync(p)) return resolve();
     const out = fs.createWriteStream(tempFile);
-    const req = require('request')({method:'GET',uri:url});
+    const req = request({method: 'GET', uri: url});
     let length = 100, sum = 0;
     req.pipe(out);
     req.on('response', data => length = Number(data.headers['content-length']));
@@ -46,111 +27,76 @@ async function download(id, p, url){
       sum += chunk.length;
       process.stdout.clearLine();
       process.stdout.cursorTo(0);
-      let b = "", l = 50, r = sum/length;
+      let b = "", l = 100, r = sum/length;
       for(let i = 0; i < l; i++) b += i < r * l ? "#" : "-";
       process.stdout.write(`[${b}] ${(r * 100).toFixed(2)}% - ${parse.base}`);
     });
     req.on('end', () => {
-      fs.renameSync(tempFile, assetFile);
-      resolve(console.log(''));
+      fs.renameSync(tempFile, p);
+      resolve(console.log('\n'));
     });
+    req.on('error', reject);
   });
-
-  downloads.push(run);
-
-  if(immediate) return run();
-  return run;
 }
+
+const lead = (n, size = 3) => {
+  const s = "000000000" + n;
+  return s.substr(s.length - size);
+}
+
+start();
 
 async function start(){
   try{
-    console.log(`Downloading courses...`);
-    const {data: {results: courses}} = await axios(urls.courses());
-    console.log(`Found ${courses.length} courses.`);
-    for(let course of courses.sort(() => Math.random() - 0.5)){
-      console.log(`Downloading course: ${course.title}`);
-      let {image_480x270: courseImage, published_title: courseSlug} = course;
-      let coursePath = path.join(COURSES, safe(course.title));
+    for(let course of courses){
+      let coursePath = path.join(COURSES, course.published_title);
+      let courseThumbnail = course.image_750x422;
 
-      const {data: {results: items}} = await axios(urls.course(course.id));
+      let lastChapter = null;
 
-      let chapterPath = coursePath;
-
-      for(let item of items){
-        let itemSlug = `${item.object_index} ${item.title}`;
+      for(let item of course.items){
+        item.slug = safe(`${lead(item.object_index)}-${item._class}-${item.title}`);
 
         if(item._class == "chapter"){
-          console.log(`\tChapter ${item.object_index}: ${item.title}`);
-          chapterPath = path.join(coursePath, safe(itemSlug));
-
-        } else if(item._class == "lecture"){
-          console.log(`\t\Lecture ${item.object_index}: ${item.title}`);
-          let itemPath = path.join(chapterPath, safe(itemSlug));
+          lastChapter = item;
+          continue;
+        } else{
+          let itemPath = path.join(coursePath, lastChapter.slug, item.slug);
           mkdir(itemPath);
+          fs.writeFileSync(path.join(itemPath, item._class + '.json'), JSON.stringify(item, null, 2));
+          let assets = [];
+          if(item.asset) assets.push(item.asset);
+          if(item.supplementary_assets) assets = assets.concat(item.supplementary_assets);
 
-          let {data: asset} = await(axios(urls.asset(item.asset.id)));
-
-          let {title: filename, thumbnail_url: thumbnail, captions} = asset;
-
-          console.log(`\t\t\tDownloading thumbnail...`);
-          await download(asset.id, path.join(
-            itemPath,
-            safe(`${asset.id} thumbnail.jpg`)
-          ), thumbnail);
-
-          if(asset.asset_type == "Video"){
-          console.log(`\t\t\tDownloading video...`);
-            let video = asset.stream_urls.Video[0].file;
-            await download(asset.id, path.join(
-              itemPath,
-              safe(filename)
-            ), video);
-
-            for(let caption of asset.captions){
-              console.log(`\t\t\tDownloading ${caption.video_label.toLowerCase()} caption...`);
-              await download(caption.id, path.join(
-                itemPath,
-                safe(`Caption (${caption.video_label}) - ${caption.title}`)
-              ), caption.url);
-            }
-          } else if(asset.asset_type == "Article"){
-            console.log(`\t\t\tWriting article...`);
-            fs.writeFileSync(path.join(
-              itemPath, safe(`article-${filename}.html`)
-            ), asset.body);
-          }
-          for(let supp of (item.supplementary_assets || [])){
-            console.log(`\t\t\tDownloading supplementary asset (${supp.filename})...`);
-            if(supp.asset_type == "File"){
-              let {data:{download_urls:{File: [{file: fileUrl}]}}} = await(axios(urls.supp(course.id,item.id,supp.id)));
-              await download(supp.id, path.join(
-                itemPath,
-                safe(supp.filename)
-              ), fileUrl);
-
-            } else if(supp.asset_type == "ExternalLink") {
-              fs.writeFileSync(path.join(
-                itemPath, safe(supp.filename) + ".json"
-              ), `URL=${supp.external_url}`);
+          for(let asset of assets){
+            //Video File Article ExternalLink
+            if(asset.asset_type == "Video"){
+              let videoPath = path.join(itemPath, "videos");
+              mkdir(videoPath);
+              await download(path.join(videoPath, safe(asset.title)), asset.stream_urls.Video[0].file);
+              for(let caption of asset.captions){
+                let captionPath = path.join(videoPath, "captions");
+                mkdir(captionPath);
+                await download(path.join(captionPath, safe(caption.title)), caption.url);
+              }
+            } else if(asset.asset_type == "File"){
+              let filePath = path.join(itemPath, "files");
+              mkdir(filePath);
+              await download(path.join(filePath, safe(asset.title)), asset.download_urls.File[0].file);
+            } else if(asset.asset_type == "Article"){
+              let articlePath = path.join(itemPath, "articles");
+              mkdir(articlePath);
+              fs.writeFileSync(path.join(articlePath, safe(`${asset.title}.html`)), asset.body);
+            } else if(asset.asset_type == "ExternalLink"){
+              let linkPath = path.join(itemPath, "links");
+              mkdir(linkPath);
+              fs.writeFileSync(path.join(linkPath, safe(`${asset.title}.url`)), `URL=${asset.external_url}`);
             }
           }
         }
       }
     }
-    mkdir(DATA);
-    fs.writeFileSync(path.join(
-      DATA, safe('courses') + ".json"
-    ), JSON.stringify(courses, null, 2));
-
-    if(!immediate){
-      for(let down of downloads){
-        await down();
-      }
-    }
   } catch(e){
-    console.log(e);
     start();
   }
-};
-
-start();
+}
