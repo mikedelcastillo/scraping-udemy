@@ -11,32 +11,48 @@ const {ROOT, TEMP, COURSES, DATA} = require('./paths');
 
 const courses = JSON.parse(fs.readFileSync(path.join(DATA, 'courses.json'), 'utf-8'));
 
+let concurrent = 15;
+let downloading = [];
+let downloads = [];
+
 const download = async (p, url) => {
   mkdir(TEMP);
   const parse = path.parse(p);
   const id = (Math.floor(Math.random() * 999999999) + 100000000).toString();
   const tempFile = path.join(TEMP, `${id}-${parse.base}`);
-  return new Promise((resolve, reject) => {
+
+  const run = () => new Promise((resolve, reject) => {
     if(fs.existsSync(p)) return resolve();
+
+    let downloadDetails = {
+      progress: 0, total: 1, parse
+    };
+
+    downloading.push(downloadDetails);
+
     const out = fs.createWriteStream(tempFile);
     const req = request({method: 'GET', uri: url});
     let length = 100, sum = 0;
     req.pipe(out);
-    req.on('response', data => length = Number(data.headers['content-length']));
+    req.on('response', data => downloadDetails.total = length = Number(data.headers['content-length']));
     req.on('data', chunk => {
       sum += chunk.length;
-      process.stdout.clearLine();
-      process.stdout.cursorTo(0);
-      let b = "", l = 100, r = sum/length;
-      for(let i = 0; i < l; i++) b += i < r * l ? "#" : "-";
-      process.stdout.write(`[${b}] ${(r * 100).toFixed(2)}% - ${parse.base}`);
+      downloadDetails.progress = sum;
+      updateTerminal();
     });
     req.on('end', () => {
       fs.renameSync(tempFile, p);
-      resolve(console.log('\n'));
+      resolve();
+      downloading.splice(downloading.indexOf(downloadDetails), 1);
     });
-    req.on('error', reject);
+    req.on('error', () => {
+      reject();
+      downloading.splice(downloading.indexOf(downloadDetails), 1);
+    });
   });
+
+  downloads.push(run);
+  return Promise.resolve(run);
 }
 
 const lead = (n, size = 3) => {
@@ -44,9 +60,9 @@ const lead = (n, size = 3) => {
   return s.substr(s.length - size);
 }
 
-start();
+startQueue();
 
-async function start(){
+async function startQueue(){
   try{
     for(let course of courses){
       let coursePath = path.join(COURSES, course.published_title);
@@ -55,6 +71,7 @@ async function start(){
       let lastChapter = null;
 
       for(let item of course.items){
+        console.log(course.title, item.title);
         item.slug = safe(`${lead(item.object_index)}-${item._class}-${item.title}`);
 
         if(item._class == "chapter"){
@@ -86,17 +103,38 @@ async function start(){
             } else if(asset.asset_type == "Article"){
               let articlePath = path.join(itemPath, "articles");
               mkdir(articlePath);
-              fs.writeFileSync(path.join(articlePath, safe(`${asset.title}.html`)), asset.body);
+              fs.writeFileSync(path.join(articlePath, safe(`${asset.title || 'article'}.html`)), asset.body);
             } else if(asset.asset_type == "ExternalLink"){
               let linkPath = path.join(itemPath, "links");
               mkdir(linkPath);
-              fs.writeFileSync(path.join(linkPath, safe(`${asset.title}.url`)), `URL=${asset.external_url}`);
+              fs.writeFileSync(path.join(linkPath, safe(`${asset.title || 'link'}.url`)), `URL=${asset.external_url}`);
             }
           }
         }
       }
     }
+
+    for(let i = 0; i < concurrent; i++) downloadLoop();
   } catch(e){
-    start();
+    startQueue();
+  }
+}
+
+function downloadLoop(){
+  // downloads = downloads.sort(() => Math.random() - 0.5);
+  const down = downloads.pop();
+  if(down) down().then(downloadLoop).catch(e => {
+    downloads.push(down);
+  });
+}
+
+function updateTerminal(){
+  console.log('\x1Bc');
+  console.log(`\nDownloading... (${downloading.length + downloads.length} left)`);
+  for(let d of downloading){
+    let string = "", length = 70, ratio = d.progress/d.total;
+    for(let j = 0; j < length; j++) string += j < ratio * length ? "#" : "-";
+    toWrite = `[${string}] ${(ratio * 100).toFixed(2)}% - ${d.parse.base}`;
+    console.log(toWrite);
   }
 }
