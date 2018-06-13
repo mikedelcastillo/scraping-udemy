@@ -11,7 +11,7 @@ const {ROOT, TEMP, COURSES, DATA} = require('./paths');
 
 const courses = JSON.parse(fs.readFileSync(path.join(DATA, 'courses.json'), 'utf-8'));
 
-let concurrent = 15;
+let concurrent = 10;
 let downloading = [];
 let downloads = [];
 
@@ -25,24 +25,33 @@ const download = async (p, url) => {
     if(fs.existsSync(p)) return resolve();
 
     let downloadDetails = {
-      progress: 0, total: 1, parse
+      progress: 0, total: 1, parse, path: p
     };
 
     downloading.push(downloadDetails);
 
-    const out = fs.createWriteStream(tempFile);
     const req = request({method: 'GET', uri: url});
     let length = 100, sum = 0;
-    req.pipe(out);
-    req.on('response', data => downloadDetails.total = length = Number(data.headers['content-length']));
+
+    req.on('response', data => {
+      if(Math.floor(data.statusCode/100) == 2){
+        req.pipe(fs.createWriteStream(tempFile));
+      }
+
+      downloadDetails.total = length = Number(data.headers['content-length']);
+    });
     req.on('data', chunk => {
       sum += chunk.length;
       downloadDetails.progress = sum;
       updateTerminal();
     });
     req.on('end', () => {
-      fs.renameSync(tempFile, p);
-      resolve();
+      try{
+        fs.renameSync(tempFile, p);
+        resolve();
+      } catch(e){
+        reject();
+      }
       downloading.splice(downloading.indexOf(downloadDetails), 1);
     });
     req.on('error', () => {
@@ -122,19 +131,26 @@ async function startQueue(){
 
 function downloadLoop(){
   // downloads = downloads.sort(() => Math.random() - 0.5);
-  const down = downloads.pop();
-  if(down) down().then(downloadLoop).catch(e => {
+  const down = downloads.shift();
+  if(down) down()
+  .then(downloadLoop)
+  .catch(e => {
     downloads.push(down);
   });
 }
 
 function updateTerminal(){
-  console.log('\x1Bc');
-  console.log(`\nDownloading... (${downloading.length + downloads.length} left)`);
+  let lines = [
+    '\x1Bc',
+    `Downloading... (${downloading.length + downloads.length} left)`
+  ];
+
   for(let d of downloading){
     let string = "", length = 70, ratio = d.progress/d.total;
     for(let j = 0; j < length; j++) string += j < ratio * length ? "#" : "-";
     toWrite = `[${string}] ${(ratio * 100).toFixed(2)}% - ${d.parse.base}`;
-    console.log(toWrite);
+    lines.push(toWrite);
   }
+
+  console.log(lines.join("\n"));
 }
