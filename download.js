@@ -2,7 +2,6 @@ const fs = require('fs');
 const {sync: mkdir} = require('mkdirp');
 const path = require('path');
 const request = require('request');
-const term = require('./term');
 const ln = fs.symlinkSync;
 const icon = (p, i) => term(`./node_modules/xfileicon/bin/fileicon set '${p}' '${i}'`);
 const safe = p => p.toLowerCase().replace(/[\-\\\ \'\"\/\:\;\<\>\+\&]{1,}/gmi, '-');
@@ -77,10 +76,11 @@ async function startQueue(){
       let coursePath = path.join(COURSES, course.published_title);
       let courseThumbnail = course.image_750x422;
 
+      let videos = [];
       let lastChapter = null;
 
       for(let item of course.items){
-        console.log(course.title, item.title);
+
         item.slug = safe(`${lead(item.object_index)}-${item._class}-${item.title}`);
 
         if(item._class == "chapter"){
@@ -95,16 +95,32 @@ async function startQueue(){
           if(item.supplementary_assets) assets = assets.concat(item.supplementary_assets);
 
           for(let asset of assets){
-            //Video File Article ExternalLink
             if(asset.asset_type == "Video"){
               let videoPath = path.join(itemPath, "videos");
+              let videoFile = path.join(videoPath, safe(asset.title));
+              let captionFile;
+
               mkdir(videoPath);
-              await download(path.join(videoPath, safe(asset.title)), asset.stream_urls.Video[0].file);
+
+              await download(videoFile, asset.stream_urls.Video[0].file);
+
               for(let caption of asset.captions){
                 let captionPath = path.join(videoPath, "captions");
+                captionFile = path.join(captionPath, safe(caption.title));
+
                 mkdir(captionPath);
-                await download(path.join(captionPath, safe(caption.title)), caption.url);
+                await download(captionFile, caption.url);
               }
+
+              videos.push({
+                chapter: lastChapter.title,
+                chapter_index: lead(lastChapter.object_index),
+                title: item.title,
+                item_index: lead(item.object_index),
+                video_file: videoFile,
+                caption_file: captionFile
+              });
+
             } else if(asset.asset_type == "File"){
               let filePath = path.join(itemPath, "files");
               mkdir(filePath);
@@ -121,6 +137,26 @@ async function startQueue(){
           }
         }
       }
+
+      console.log(course.title);
+      fs.writeFileSync(path.join(coursePath, 'playlist.xspf'),
+      `<?xml version="1.0" encoding="UTF-8"?>
+        <playlist xmlns="http://xspf.org/ns/0/" xmlns:vlc="http://www.videolan.org/vlc/playlist/ns/0/" version="1">
+          <title>Playlist</title>
+          <trackList>
+            ${videos.map(video => `
+              <track>
+                <location>${encodeURI(path.relative(coursePath, video.video_file)).replace(/\?/g,"%3F")}</location>
+                <title>${video.chapter_index} ${video.item_index} ${video.title.replace(/\&/gmi, '&amp;')}</title>
+                <extension application="http://www.videolan.org/vlc/playlist/0">
+                  <playing>${Number(video.item_index)}</playing>
+
+                </extension>
+              </track>
+            `).join("")}
+          </trackList>
+        </playlist>
+      `);
     }
 
     for(let i = 0; i < concurrent; i++) downloadLoop();
