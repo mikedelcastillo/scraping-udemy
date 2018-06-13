@@ -11,7 +11,7 @@ const {ROOT, TEMP, COURSES, DATA} = require('./paths');
 
 const courses = JSON.parse(fs.readFileSync(path.join(DATA, 'courses.json'), 'utf-8'));
 
-let concurrent = 10;
+let concurrent = Number(process.argv[2]) || 30;
 let downloading = [];
 let downloads = [];
 
