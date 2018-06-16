@@ -5,6 +5,12 @@ const request = require('request');
 const ln = fs.symlinkSync;
 const icon = (p, i) => term(`./node_modules/xfileicon/bin/fileicon set '${p}' '${i}'`);
 const safe = p => p.toLowerCase().replace(/[\-\\\ \'\"\/\:\;\<\>\+\&]{1,}/gmi, '-');
+const escape = (unsafe) => unsafe
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#039;");
 
 const {ROOT, TEMP, COURSES, DATA} = require('./paths');
 
@@ -13,6 +19,27 @@ const courses = JSON.parse(fs.readFileSync(path.join(DATA, 'courses.json'), 'utf
 let concurrent = Number(process.argv[2]) || 30;
 let downloading = [];
 let downloads = [];
+
+let extensions = {
+  '.vtt': 0,
+  '.txt': 1,
+  '.html': 2,
+  '.css': 2,
+  '.js': 2,
+
+  '.pdf': 3,
+  '.xlsx': 4,
+
+  '.png': 5,
+  '.jpg': 5,
+
+  '.ogg': 6,
+  '.zip': 7,
+
+  '.mp4': 8,
+  '.mov': 8,
+  '.m4v': 8,
+};
 
 const download = async (p, url) => {
   mkdir(TEMP);
@@ -59,6 +86,7 @@ const download = async (p, url) => {
     });
   });
 
+  run.ext = parse.ext;
   downloads.push(run);
   return Promise.resolve(run);
 }
@@ -142,12 +170,12 @@ async function startQueue(){
       fs.writeFileSync(path.join(coursePath, 'playlist.xspf'),
       `<?xml version="1.0" encoding="UTF-8"?>
         <playlist xmlns="http://xspf.org/ns/0/" xmlns:vlc="http://www.videolan.org/vlc/playlist/ns/0/" version="1">
-          <title>Playlist</title>
+          <title>Course Playlist</title>
           <trackList>
             ${videos.map(video => `
               <track>
                 <location>${encodeURI(path.relative(coursePath, video.video_file)).replace(/\?/g,"%3F")}</location>
-                <title>${video.chapter_index} ${video.item_index} ${video.title.replace(/\&/gmi, '&amp;')}</title>
+                <title>${video.chapter_index} ${video.item_index} ${escape(video.title)}</title>
                 <extension application="http://www.videolan.org/vlc/playlist/0">
                   <playing>${Number(video.item_index)}</playing>
 
@@ -158,6 +186,13 @@ async function startQueue(){
         </playlist>
       `);
     }
+
+    // downloads = downloads.sort((a, b) => {
+    //   let c = extensions[a.ext] || Infinity;
+    //   let d = extensions[b.ext] || Infinity;
+    //
+    //   return c - d;
+    // });
 
     for(let i = 0; i < concurrent; i++) downloadLoop();
   } catch(e){
